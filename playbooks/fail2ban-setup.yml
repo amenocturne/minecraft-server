@@ -1,0 +1,197 @@
+---
+- name: Install and Configure Fail2Ban
+  hosts: minecraft_server
+  become: yes
+  tasks:
+    - name: Install fail2ban (Ubuntu/Debian)
+      apt:
+        name: fail2ban
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install fail2ban (RHEL/CentOS)
+      yum:
+        name: fail2ban
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Enable and start fail2ban service
+      systemd:
+        name: fail2ban
+        state: started
+        enabled: yes
+
+    - name: Create fail2ban local configuration
+      copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [DEFAULT]
+          # Ban hosts for 1 hour
+          bantime = 3600
+          
+          # Find hosts that fail 5 times within 10 minutes
+          findtime = 600
+          maxretry = 5
+          
+          # Destination email for notifications
+          destemail = root@localhost
+          sender = fail2ban@{{ ansible_hostname }}
+          
+          # Ban action (iptables, ufw, etc)
+          {% if ansible_os_family == "Debian" %}
+          banaction = ufw
+          {% else %}
+          banaction = iptables-multiport
+          {% endif %}
+          
+          # Enable email notifications
+          action = %(action_mwl)s
+          
+          [sshd]
+          enabled = true
+          port = ssh
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 3
+          bantime = 1800
+          
+          [sshd-ddos]
+          enabled = true
+          port = ssh
+          filter = sshd-ddos
+          logpath = /var/log/auth.log
+          maxretry = 2
+          bantime = 3600
+          
+          [minecraft-server]
+          enabled = true
+          port = 25565
+          filter = minecraft-server
+          logpath = /var/log/minecraft/minecraft.log
+          maxretry = 10
+          bantime = 600
+          findtime = 300
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart_fail2ban
+
+    - name: Create minecraft-server filter for fail2ban
+      copy:
+        dest: /etc/fail2ban/filter.d/minecraft-server.conf
+        content: |
+          [Definition]
+          # Minecraft server attack patterns
+          failregex = ^.*\[.*\]: <HOST>.*lost connection.*$
+                      ^.*\[.*\]: <HOST>.*disconnected.*$
+                      ^.*Disconnecting <HOST>.*$
+                      ^.*<HOST>.*connection throttled.*$
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart_fail2ban
+
+    - name: Create custom SSH filter for additional protection
+      copy:
+        dest: /etc/fail2ban/filter.d/sshd-custom.conf
+        content: |
+          [Definition]
+          # Custom SSH attack patterns
+          failregex = ^%(__prefix_line)s(?:error: PAM: )?[aA]uthentication (?:failure|error|failed) for .* from <HOST>( via \S+)?\s*$
+                      ^%(__prefix_line)s(?:error: )?Received disconnect from <HOST>: 3: .*: Auth fail$
+                      ^%(__prefix_line)sUser .+ from <HOST> not allowed because not listed in AllowUsers$
+                      ^%(__prefix_line)sUser .+ from <HOST> not allowed because listed in DenyUsers$
+                      ^%(__prefix_line)sUser .+ from <HOST> not allowed because not in any group$
+                      ^%(__prefix_line)srefused connect from \S+ \(<HOST>\)$
+                      ^%(__prefix_line)sReceived disconnect from <HOST>: 11: Bye Bye$
+                      ^%(__prefix_line)sConnection closed by <HOST>$
+                      ^%(__prefix_line)sConnection from <HOST> closed.$
+          
+          ignoreregex =
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart_fail2ban
+
+    - name: Create fail2ban action for UFW (if using UFW)
+      copy:
+        dest: /etc/fail2ban/action.d/ufw.conf
+        content: |
+          [Definition]
+          actionstart =
+          actionstop =
+          actioncheck =
+          actionban = ufw insert 1 deny from <ip> to any
+          actionunban = ufw delete deny from <ip> to any
+        owner: root
+        group: root
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+      notify: restart_fail2ban
+
+    - name: Ensure log directory exists for minecraft logs
+      file:
+        path: /var/log/minecraft
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Create logrotate configuration for fail2ban
+      copy:
+        dest: /etc/logrotate.d/fail2ban
+        content: |
+          /var/log/fail2ban.log {
+              daily
+              missingok
+              rotate 7
+              compress
+              delaycompress
+              postrotate
+                  /bin/systemctl reload fail2ban > /dev/null 2>&1 || true
+              endscript
+          }
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Start and enable fail2ban
+      systemd:
+        name: fail2ban
+        state: started
+        enabled: yes
+
+    - name: Check fail2ban status
+      command: fail2ban-client status
+      register: fail2ban_status
+
+    - name: Display fail2ban status
+      debug:
+        msg: "{{ fail2ban_status.stdout_lines }}"
+
+    - name: Create fail2ban monitoring script
+      copy:
+        dest: /usr/local/bin/fail2ban-status.sh
+        content: |
+          #!/bin/bash
+          echo "=== Fail2Ban Status ==="
+          fail2ban-client status
+          
+          echo -e "\n=== Active Jails ==="
+          for jail in $(fail2ban-client status | grep "Jail list:" | sed 's/.*Jail list://' | sed 's/,//g'); do
+              echo "--- $jail ---"
+              fail2ban-client status $jail
+          done
+          
+          echo -e "\n=== Recent Bans (last 100 lines) ==="
+          tail -n 100 /var/log/fail2ban.log | grep "Ban"
+        mode: '0755'
+        owner: root
+        group: root
+
+  handlers:
+    - name: restart_fail2ban
+      systemd:
+        name: fail2ban
+        state: restarted

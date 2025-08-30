@@ -1,0 +1,65 @@
+---
+- name: Update Minecraft Server Configuration
+  hosts: minecraft_server
+  become: yes
+  vars:
+    minecraft_dir: /opt/minecraft-server
+  
+  tasks:
+    - name: Copy updated docker-compose.yml to server
+      copy:
+        src: ../docker-compose.yml
+        dest: "{{ minecraft_dir }}/docker-compose.yml"
+        mode: '0644'
+        backup: yes
+      register: compose_updated
+
+    - name: Stop Minecraft server if config changed
+      command: docker-compose down
+      args:
+        chdir: "{{ minecraft_dir }}"
+      when: compose_updated.changed
+
+    - name: Pull latest Docker image (if needed)
+      command: docker-compose pull
+      args:
+        chdir: "{{ minecraft_dir }}"
+      when: compose_updated.changed
+
+    - name: Start Minecraft server with new configuration
+      command: docker-compose up -d
+      args:
+        chdir: "{{ minecraft_dir }}"
+      when: compose_updated.changed
+
+    - name: Wait for server to start (if config changed)
+      wait_for:
+        port: 25565
+        host: "{{ ansible_host }}"
+        timeout: 300
+        delay: 30
+      when: compose_updated.changed
+
+    - name: Display server status
+      command: docker-compose ps
+      args:
+        chdir: "{{ minecraft_dir }}"
+      register: server_status
+
+    - name: Show server status
+      debug:
+        msg: "{{ server_status.stdout_lines }}"
+
+    - name: Display result
+      debug:
+        msg: |
+          {% if compose_updated.changed %}
+          Configuration updated and server restarted!
+          {% else %}
+          No configuration changes detected.
+          {% endif %}
+          
+          Server is running with:
+          - Online mode: DISABLED (cracked clients allowed)
+          - Version: Paper 1.16.5
+          - Port: 25565

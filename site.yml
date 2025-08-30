@@ -1,0 +1,7 @@
+---
+- import_playbook: playbooks/system-hardening.yml
+- import_playbook: playbooks/firewall-security.yml
+- import_playbook: playbooks/ssh-hardening.yml
+- import_playbook: playbooks/fail2ban-setup.yml
+- import_playbook: playbooks/docker-setup.yml
+- import_playbook: playbooks/minecraft-deploy.yml

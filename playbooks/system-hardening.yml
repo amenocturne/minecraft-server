@@ -1,0 +1,197 @@
+---
+- name: System Security Hardening
+  hosts: minecraft_server
+  become: yes
+  tasks:
+    - name: Update all packages to latest version
+      apt:
+        upgrade: dist
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Update all packages (RHEL/CentOS)
+      yum:
+        name: '*'
+        state: latest
+      when: ansible_os_family == "RedHat"
+
+    - name: Install essential security packages (Ubuntu/Debian)
+      apt:
+        name:
+          - unattended-upgrades
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install essential security packages (RHEL/CentOS)
+      yum:
+        name:
+          - yum-cron
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Configure automatic security updates (Ubuntu/Debian)
+      copy:
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}";
+              "${distro_id}:${distro_codename}-security";
+              "${distro_id}ESMApps:${distro_codename}-apps-security";
+              "${distro_id}ESM:${distro_codename}-infra-security";
+          };
+          Unattended-Upgrade::Package-Blacklist {
+              "docker*";
+              "minecraft*";
+          };
+          Unattended-Upgrade::DevRelease "false";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+          Unattended-Upgrade::Automatic-Reboot "false";
+          Unattended-Upgrade::Automatic-Reboot-Time "02:00";
+        owner: root
+        group: root
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+
+    - name: Enable automatic updates timer (Ubuntu/Debian)
+      systemd:
+        name: unattended-upgrades
+        enabled: yes
+        state: started
+      when: ansible_os_family == "Debian"
+
+    - name: Configure yum-cron for automatic updates (RHEL/CentOS)
+      lineinfile:
+        path: /etc/yum/yum-cron.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      with_items:
+        - { regexp: '^update_cmd =', line: 'update_cmd = security' }
+        - { regexp: '^apply_updates =', line: 'apply_updates = yes' }
+        - { regexp: '^emit_via =', line: 'emit_via = stdio' }
+      when: ansible_os_family == "RedHat"
+
+    - name: Enable yum-cron service (RHEL/CentOS)
+      systemd:
+        name: yum-cron
+        enabled: yes
+        state: started
+      when: ansible_os_family == "RedHat"
+
+    - name: Set kernel parameters for security
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_set: yes
+        state: present
+        reload: yes
+      with_items:
+        # Network security
+        - { name: 'net.ipv4.conf.default.rp_filter', value: '1' }
+        - { name: 'net.ipv4.conf.all.rp_filter', value: '1' }
+        - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.all.secure_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.secure_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.all.send_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.send_redirects', value: '0' }
+        - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+        - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+        - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+        - { name: 'net.ipv4.ip_forward', value: '0' }
+        # Memory and process security
+        - { name: 'kernel.dmesg_restrict', value: '1' }
+        - { name: 'kernel.kptr_restrict', value: '2' }
+        - { name: 'kernel.yama.ptrace_scope', value: '1' }
+        - { name: 'fs.suid_dumpable', value: '0' }
+
+    - name: Create security limits configuration
+      copy:
+        dest: /etc/security/limits.d/99-security.conf
+        content: |
+          # Security limits
+          * hard core 0
+          * soft nproc 1024
+          * hard nproc 2048
+          * soft nofile 1024
+          * hard nofile 2048
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Disable unused network protocols
+      copy:
+        dest: /etc/modprobe.d/blacklist-rare-network.conf
+        content: |
+          # Disable rare network protocols
+          install dccp /bin/true
+          install sctp /bin/true
+          install rds /bin/true
+          install tipc /bin/true
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Configure logrotate for system logs
+      copy:
+        dest: /etc/logrotate.d/rsyslog-security
+        content: |
+          /var/log/auth.log
+          /var/log/kern.log
+          /var/log/daemon.log
+          /var/log/syslog
+          {
+              daily
+              rotate 30
+              missingok
+              notifempty
+              compress
+              delaycompress
+              sharedscripts
+              postrotate
+                  /usr/lib/rsyslog/rsyslog-rotate
+              endscript
+          }
+        owner: root
+        group: root
+        mode: '0644'
+
+
+
+    - name: Set proper permissions on sensitive files
+      file:
+        path: "{{ item.path }}"
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      with_items:
+        - { path: '/etc/passwd', owner: 'root', group: 'root', mode: '0644' }
+        - { path: '/etc/shadow', owner: 'root', group: 'shadow', mode: '0640' }
+        - { path: '/etc/group', owner: 'root', group: 'root', mode: '0644' }
+        - { path: '/etc/gshadow', owner: 'root', group: 'shadow', mode: '0640' }
+        - { path: '/etc/ssh/sshd_config', owner: 'root', group: 'root', mode: '0600' }
+        - { path: '/boot/grub/grub.cfg', owner: 'root', group: 'root', mode: '0600' }
+
+    - name: Remove unnecessary packages (Ubuntu/Debian)
+      apt:
+        name:
+          - telnet
+          - rsh-client
+          - rsh-redone-client
+          - talk
+          - ntalk
+        state: absent
+      when: ansible_os_family == "Debian"
+
+
+    - name: Display security hardening summary
+      debug:
+        msg: |
+          Basic security hardening completed:
+          - Automatic security updates enabled
+          - Kernel security parameters configured
+          - Security limits configured
+          - Unnecessary packages removed
+          - Log rotation configured for security logs

@@ -1,0 +1,133 @@
+---
+- name: Configure Firewall Security
+  hosts: minecraft_server
+  become: yes
+  tasks:
+    - name: Install ufw (Ubuntu/Debian)
+      apt:
+        name: ufw
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install firewalld (RHEL/CentOS)
+      yum:
+        name: firewalld
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Reset ufw to defaults (Ubuntu/Debian)
+      ufw:
+        state: reset
+      when: ansible_os_family == "Debian"
+
+    - name: Set default ufw policies (Ubuntu/Debian)
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      with_items:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+        - { direction: 'routed', policy: 'deny' }
+      when: ansible_os_family == "Debian"
+
+    - name: Allow SSH through ufw (Ubuntu/Debian)
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+        comment: 'SSH access'
+      when: ansible_os_family == "Debian"
+
+    - name: Allow Minecraft server port through ufw (Ubuntu/Debian)
+      ufw:
+        rule: allow
+        port: '25565'
+        proto: tcp
+        comment: 'Minecraft server'
+      when: ansible_os_family == "Debian"
+
+    - name: Allow Docker daemon communication (Ubuntu/Debian)
+      ufw:
+        rule: allow
+        from_ip: '172.16.0.0/12'
+        comment: 'Docker internal communication'
+      when: ansible_os_family == "Debian"
+
+    - name: Enable ufw (Ubuntu/Debian)
+      ufw:
+        state: enabled
+      when: ansible_os_family == "Debian"
+
+    - name: Start and enable firewalld (RHEL/CentOS)
+      systemd:
+        name: firewalld
+        state: started
+        enabled: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Configure firewalld rules (RHEL/CentOS)
+      firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      with_items:
+        - ssh
+      when: ansible_os_family == "RedHat"
+
+    - name: Allow Minecraft port in firewalld (RHEL/CentOS)
+      firewalld:
+        port: 25565/tcp
+        permanent: yes
+        state: enabled
+        immediate: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Set up rate limiting for SSH (Ubuntu/Debian)
+      ufw:
+        rule: limit
+        port: '22'
+        proto: tcp
+        comment: 'SSH rate limiting'
+      when: ansible_os_family == "Debian"
+
+    - name: Block common attack ports (Ubuntu/Debian)
+      ufw:
+        rule: deny
+        port: "{{ item }}"
+        proto: tcp
+        comment: 'Block common attack ports'
+      with_items:
+        - '23'    # Telnet
+        - '135'   # RPC
+        - '139'   # NetBIOS
+        - '445'   # SMB
+        - '1433'  # SQL Server
+        - '3389'  # RDP
+      when: ansible_os_family == "Debian"
+
+    - name: Configure logging for ufw
+      ufw:
+        logging: 'medium'
+      when: ansible_os_family == "Debian"
+
+    - name: Display firewall status (Ubuntu/Debian)
+      command: ufw status verbose
+      register: ufw_status
+      when: ansible_os_family == "Debian"
+
+    - name: Show firewall status (Ubuntu/Debian)
+      debug:
+        msg: "{{ ufw_status.stdout_lines }}"
+      when: ansible_os_family == "Debian"
+
+    - name: Display firewall status (RHEL/CentOS)
+      command: firewall-cmd --list-all
+      register: firewalld_status
+      when: ansible_os_family == "RedHat"
+
+    - name: Show firewall status (RHEL/CentOS)
+      debug:
+        msg: "{{ firewalld_status.stdout_lines }}"
+      when: ansible_os_family == "RedHat"

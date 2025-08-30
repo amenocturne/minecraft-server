@@ -1,0 +1,164 @@
+---
+- name: Deploy Minecraft Server
+  hosts: minecraft_server
+  become: yes
+  vars:
+    minecraft_dir: /opt/minecraft-server
+  
+  tasks:
+    - name: Create minecraft server directory
+      file:
+        path: "{{ minecraft_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy docker-compose.yml to server
+      copy:
+        src: ../docker-compose.yml
+        dest: "{{ minecraft_dir }}/docker-compose.yml"
+        mode: '0644'
+
+    - name: Create backup script
+      copy:
+        dest: "{{ minecraft_dir }}/backup.sh"
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          BACKUP_DIR="/opt/minecraft-backups"
+          TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+          
+          mkdir -p $BACKUP_DIR
+          
+          echo "Creating backup of Minecraft world data..."
+          docker run --rm \
+            -v minecraft-server_minecraft_data:/source:ro \
+            -v $BACKUP_DIR:/backup \
+            alpine:latest \
+            tar czf /backup/minecraft_backup_$TIMESTAMP.tar.gz -C /source .
+          
+          echo "Backup completed: minecraft_backup_$TIMESTAMP.tar.gz"
+          
+          # Keep only last 7 backups
+          cd $BACKUP_DIR
+          ls -t minecraft_backup_*.tar.gz | tail -n +8 | xargs -r rm
+
+    - name: Create start script
+      copy:
+        dest: "{{ minecraft_dir }}/start.sh"
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          cd {{ minecraft_dir }}
+          docker-compose up -d
+
+    - name: Create stop script
+      copy:
+        dest: "{{ minecraft_dir }}/stop.sh"
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          cd {{ minecraft_dir }}
+          docker-compose down
+
+    - name: Create restart script
+      copy:
+        dest: "{{ minecraft_dir }}/restart.sh"
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          cd {{ minecraft_dir }}
+          docker-compose restart
+
+    - name: Create logs script
+      copy:
+        dest: "{{ minecraft_dir }}/logs.sh"
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          cd {{ minecraft_dir }}
+          docker-compose logs -f minecraft
+
+    - name: Pull Docker image
+      command: docker pull itzg/minecraft-server:java8
+
+    - name: Stop existing minecraft container (if any)
+      command: docker-compose down
+      args:
+        chdir: "{{ minecraft_dir }}"
+      ignore_errors: yes
+
+    - name: Start Minecraft server
+      command: docker-compose up -d
+      args:
+        chdir: "{{ minecraft_dir }}"
+
+    - name: Wait for server to start
+      wait_for:
+        port: 25565
+        host: "{{ ansible_host }}"
+        timeout: 300
+        delay: 30
+
+    - name: Create backup cron job
+      cron:
+        name: "Minecraft server backup"
+        minute: "0"
+        hour: "3"
+        job: "{{ minecraft_dir }}/backup.sh"
+        user: root
+
+    - name: Create systemd service file
+      copy:
+        dest: /etc/systemd/system/minecraft-server.service
+        content: |
+          [Unit]
+          Description=Minecraft Server
+          After=docker.service
+          Requires=docker.service
+          
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          WorkingDirectory={{ minecraft_dir }}
+          ExecStart=/usr/bin/docker-compose up -d
+          ExecStop=/usr/bin/docker-compose down
+          TimeoutStartSec=0
+          
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable minecraft service to start on boot
+      systemd:
+        name: minecraft-server
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Display server status
+      command: docker-compose ps
+      args:
+        chdir: "{{ minecraft_dir }}"
+      register: server_status
+
+    - name: Show server status
+      debug:
+        msg: "{{ server_status.stdout_lines }}"
+
+    - name: Display connection info
+      debug:
+        msg: |
+          Minecraft Server is now running!
+          
+          Connection Details:
+          - Server IP: {{ ansible_host }}
+          - Port: 25565
+          - Version: Paper 1.16.5
+          
+          Management Commands:
+          - Start server: {{ minecraft_dir }}/start.sh
+          - Stop server: {{ minecraft_dir }}/stop.sh
+          - Restart server: {{ minecraft_dir }}/restart.sh
+          - View logs: {{ minecraft_dir }}/logs.sh
+          - Create backup: {{ minecraft_dir }}/backup.sh
+          
+          Automatic backups are scheduled daily at 3 AM
+          World data is persistently stored in Docker volume: minecraft-server_minecraft_data

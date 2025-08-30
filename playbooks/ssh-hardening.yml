@@ -1,0 +1,125 @@
+---
+- name: SSH Security Hardening
+  hosts: minecraft_server
+  become: yes
+  vars:
+    ssh_port: 22
+    allowed_users: "root"
+  
+  tasks:
+    - name: Backup original sshd_config
+      copy:
+        src: /etc/ssh/sshd_config
+        dest: /etc/ssh/sshd_config.backup
+        remote_src: yes
+        backup: yes
+
+    - name: Configure SSH security settings
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        backup: yes
+      with_items:
+        - { regexp: '^#?Port ', line: 'Port {{ ssh_port }}' }
+        - { regexp: '^#?PermitRootLogin ', line: 'PermitRootLogin prohibit-password' }
+        - { regexp: '^#?PasswordAuthentication ', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?PubkeyAuthentication ', line: 'PubkeyAuthentication yes' }
+        - { regexp: '^#?AuthorizedKeysFile ', line: 'AuthorizedKeysFile .ssh/authorized_keys' }
+        - { regexp: '^#?ChallengeResponseAuthentication ', line: 'ChallengeResponseAuthentication no' }
+        - { regexp: '^#?UsePAM ', line: 'UsePAM yes' }
+        - { regexp: '^#?X11Forwarding ', line: 'X11Forwarding no' }
+        - { regexp: '^#?PrintMotd ', line: 'PrintMotd no' }
+        - { regexp: '^#?TCPKeepAlive ', line: 'TCPKeepAlive no' }
+        - { regexp: '^#?Compression ', line: 'Compression no' }
+        - { regexp: '^#?AllowTcpForwarding ', line: 'AllowTcpForwarding no' }
+        - { regexp: '^#?GatewayPorts ', line: 'GatewayPorts no' }
+        - { regexp: '^#?PermitTunnel ', line: 'PermitTunnel no' }
+        - { regexp: '^#?AllowAgentForwarding ', line: 'AllowAgentForwarding no' }
+        - { regexp: '^#?MaxAuthTries ', line: 'MaxAuthTries 3' }
+        - { regexp: '^#?MaxSessions ', line: 'MaxSessions 2' }
+        - { regexp: '^#?ClientAliveInterval ', line: 'ClientAliveInterval 300' }
+        - { regexp: '^#?ClientAliveCountMax ', line: 'ClientAliveCountMax 2' }
+        - { regexp: '^#?LoginGraceTime ', line: 'LoginGraceTime 60' }
+        - { regexp: '^#?PermitEmptyPasswords ', line: 'PermitEmptyPasswords no' }
+        - { regexp: '^#?Protocol ', line: 'Protocol 2' }
+        - { regexp: '^#?IgnoreRhosts ', line: 'IgnoreRhosts yes' }
+        - { regexp: '^#?HostbasedAuthentication ', line: 'HostbasedAuthentication no' }
+        - { regexp: '^#?PermitUserEnvironment ', line: 'PermitUserEnvironment no' }
+        - { regexp: '^#?AllowUsers ', line: 'AllowUsers {{ allowed_users }}' }
+        - { regexp: '^#?DenyUsers ', line: 'DenyUsers games' }
+      notify: restart_ssh
+
+    - name: Add additional SSH security configurations
+      blockinfile:
+        path: /etc/ssh/sshd_config
+        block: |
+          # Additional Security Settings
+          Banner /etc/ssh/banner
+          Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+          MACs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512
+          KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,diffie-hellman-group14-sha256
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - SSH SECURITY"
+      notify: restart_ssh
+
+    - name: Create SSH banner
+      copy:
+        content: |
+          **************************************************************************
+          *                                                                        *
+          *               AUTHORIZED ACCESS ONLY - MINECRAFT SERVER               *
+          *                                                                        *
+          *   This system is for authorized users only. All activities on this    *
+          *   system are monitored and recorded. Unauthorized access is strictly  *
+          *   prohibited and will be prosecuted to the full extent of the law.    *
+          *                                                                        *
+          **************************************************************************
+        dest: /etc/ssh/banner
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Ensure SSH host keys have correct permissions
+      file:
+        path: "{{ item }}"
+        owner: root
+        group: root
+        mode: '0600'
+      with_fileglob:
+        - /etc/ssh/ssh_host_*_key
+      ignore_errors: yes
+
+    - name: Ensure SSH public keys have correct permissions
+      file:
+        path: "{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      with_fileglob:
+        - /etc/ssh/ssh_host_*_key.pub
+      ignore_errors: yes
+
+    - name: Test SSH configuration
+      command: sshd -t
+      register: ssh_config_test
+      failed_when: ssh_config_test.rc != 0
+
+    - name: Display SSH configuration test result
+      debug:
+        msg: "SSH configuration is valid"
+      when: ssh_config_test.rc == 0
+
+  handlers:
+    - name: restart_ssh
+      systemd:
+        name: ssh
+        state: restarted
+      when: ansible_os_family == "Debian"
+      listen: restart_ssh
+
+    - name: restart_ssh
+      systemd:
+        name: sshd
+        state: restarted
+      when: ansible_os_family == "RedHat"
+      listen: restart_ssh
